@@ -1,6 +1,15 @@
 name: AuraOne Rubric PR Bot
-url: https://github.com/apps/auraone-rubric-pr-bot
-hook_attributes: { url: https://rubric-pr-bot.auraone.ai/webhook }
+url: https://rubric-pr-bot.auraone.ai
+description: Checks pull requests against AuraOne rubric specifications and posts actionable review feedback.
+hook_attributes:
+  url: https://rubric-pr-bot.auraone.ai/webhook
+  active: true
+redirect_url: https://rubric-pr-bot.auraone.ai
+callback_urls:
+  - https://rubric-pr-bot.auraone.ai
+setup_url: https://rubric-pr-bot.auraone.ai
+setup_on_update: true
+public: true
 default_permissions:
   checks: write
   contents: read
