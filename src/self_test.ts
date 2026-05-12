@@ -1,6 +1,8 @@
 import { strict as assert } from "node:assert";
+import { createHmac, generateKeyPairSync } from "node:crypto";
 import { route } from "./app.js";
 import { handlePullRequestWebhook } from "./github.js";
+import { createAppJwt, createInstallationToken, verifySignature } from "./server.js";
 
 const comment = route("pull_request", ["quality.rubric.json"], {
   "quality.rubric.json": {
@@ -86,6 +88,25 @@ assert.equal(webhookResult.checkUrl, "https://github.com/auraoneai/open/runs/1")
 assert.ok(calls.some((call) => call.url.endsWith("/issues/42/comments") && call.init?.method === "POST"));
 assert.ok(calls.some((call) => call.url.endsWith("/check-runs") && call.init?.method === "POST"));
 assert.equal((calls[0].init?.headers as Record<string, string>).authorization, "Bearer test-token");
+
+const body = JSON.stringify({ action: "opened" });
+const signature = `sha256=${createHmac("sha256", "webhook-secret").update(body).digest("hex")}`;
+assert.equal(verifySignature("webhook-secret", body, signature), true);
+assert.equal(verifySignature("webhook-secret", body, "sha256=bad"), false);
+
+const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+const jwt = createAppJwt("12345", privateKeyPem, 1_700_000_000);
+assert.equal(jwt.split(".").length, 3);
+
+const tokenCalls: Array<{ url: string; init?: RequestInit }> = [];
+const token = await createInstallationToken("12345", privateKeyPem, 99, "https://api.github.test", async (url, init) => {
+  tokenCalls.push({ url, init });
+  return jsonResponse({ token: "installation-token" });
+});
+assert.equal(token, "installation-token");
+assert.equal(tokenCalls[0].url, "https://api.github.test/app/installations/99/access_tokens");
+assert.match((tokenCalls[0].init?.headers as Record<string, string>).authorization, /^Bearer /);
 
 function jsonResponse(payload: unknown) {
   return {

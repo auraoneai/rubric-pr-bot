@@ -1,6 +1,6 @@
 name: AuraOne Rubric PR Bot
 url: https://github.com/apps/auraone-rubric-pr-bot
-hook_attributes: { url: https://example.invalid/webhook }
+hook_attributes: { url: https://rubric-pr-bot.auraone.ai/webhook }
 default_permissions:
   checks: write
   contents: read
