@@ -4,6 +4,7 @@ export type Criterion = {
   description?: string;
   weight?: number;
   examples?: unknown[];
+  anchors?: unknown[];
 };
 
 export type Rubric = {
@@ -15,6 +16,16 @@ export type Finding = {
   rule: string;
   message: string;
   path?: string;
+};
+
+export type RubricDiff = ReturnType<typeof diffRubrics>;
+
+export type ReviewResult = {
+  files: string[];
+  diffs: Array<{ file: string } & RubricDiff>;
+  findings: Finding[];
+  comment: string;
+  conclusion: "success" | "failure";
 };
 
 export function diffRubrics(base: Rubric | undefined, head: Rubric) {
@@ -52,6 +63,9 @@ export function lintRubric(rubric: Rubric): Finding[] {
     if (!criterion.examples?.length) {
       findings.push({ severity: "warning", rule: "R_EXAMPLES", message: "criterion should include reviewer examples", path });
     }
+    if (!criterion.anchors?.length) {
+      findings.push({ severity: "warning", rule: "R_ANCHORS", message: "criterion should link score anchors or boundary guidance", path });
+    }
     const description = criterion.description?.toLowerCase() ?? "";
     if (/\b(good|useful|high quality)\b/.test(description)) {
       findings.push({ severity: "warning", rule: "R_VAGUE", message: "description uses vague quality language", path });
@@ -61,4 +75,8 @@ export function lintRubric(rubric: Rubric): Finding[] {
     }
   }
   return findings;
+}
+
+export function hasBlockingFindings(findings: Finding[]): boolean {
+  return findings.some((finding) => finding.severity === "error");
 }

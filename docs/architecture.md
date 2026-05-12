@@ -8,11 +8,13 @@
 2. Identify changed rubric files by suffix or configured path.
 3. Fetch base and head versions of each rubric.
 4. Build a structured diff and run lint checks.
-5. Post a concise PR comment with changed criteria, weight deltas, anchor changes, and lint findings.
+5. Build a concise PR comment with changed criteria, weight deltas, anchor changes, rubric-spec links, and lint findings.
+6. Return a success/failure conclusion so deployments can map severity `error` findings to required-check failures.
 
 ## Design Decisions
 
 - The app manifest asks for read access to pull requests and contents plus write access to PR comments.
 - Merge blocking is optional because teams may want advisory rubric reviews while they tune rules.
 - The comment builder keeps output deterministic so repeated events update predictable review content.
+- The pure route/handler layer is tested without GitHub credentials; the installed GitHub App layer owns webhook delivery and comment posting.
 - Tests use synthetic rubric JSON and do not require real repositories or customer data.

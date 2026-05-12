@@ -15,6 +15,23 @@ const comment = route("pull_request", ["quality.rubric.json"], {
   },
 });
 
-assert.match(comment, /Rubric Review/);
-assert.match(comment, /safety/);
-assert.match(comment, /R_EXAMPLES/);
+assert.ok(comment);
+assert.equal(comment.conclusion, "success");
+assert.match(comment.comment, /Rubric Review/);
+assert.match(comment.comment, /safety/);
+assert.match(comment.comment, /R_EXAMPLES/);
+assert.match(comment.comment, /R_ANCHORS/);
+assert.match(comment.comment, /rubric-spec#criteria/);
+
+const blocking = route("pull_request.synchronize", ["quality.rubric.json"], {
+  "quality.rubric.json": {
+    head: {
+      criteria: [{ label: "No stable id", description: "Specific behavior", examples: [{}], anchors: [{}] }],
+    },
+  },
+});
+
+assert.ok(blocking);
+assert.equal(blocking.conclusion, "failure");
+assert.match(blocking.comment, /R_ID/);
+assert.equal(route("push", ["quality.rubric.json"]), null);
