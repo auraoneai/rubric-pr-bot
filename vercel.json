@@ -1,0 +1,10 @@
+{
+  "public": true,
+  "buildCommand": "npm run build",
+  "rewrites": [
+    {
+      "source": "/webhook",
+      "destination": "/api/webhook"
+    }
+  ]
+}

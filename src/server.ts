@@ -61,7 +61,7 @@ export async function createInstallationToken(
   return payload.token;
 }
 
-export function startServer(env: ServerEnv = process.env, fetchImpl: FetchLike = fetch) {
+export function startServer(env: ServerEnv = process.env as ServerEnv, fetchImpl: FetchLike = fetch) {
   const appId = required(env.RUBRIC_PR_BOT_APP_ID, "RUBRIC_PR_BOT_APP_ID");
   const privateKey = required(env.RUBRIC_PR_BOT_PRIVATE_KEY, "RUBRIC_PR_BOT_PRIVATE_KEY");
   const webhookSecret = required(env.RUBRIC_PR_BOT_WEBHOOK_SECRET, "RUBRIC_PR_BOT_WEBHOOK_SECRET");
@@ -71,27 +71,62 @@ export function startServer(env: ServerEnv = process.env, fetchImpl: FetchLike =
 
   const server = createServer(async (req, res) => {
     try {
-      if (req.method !== "POST" || req.url !== "/webhook") return sendJson(res, 404, { ok: false, error: "not found" });
       const body = await readBody(req);
-      const signature = req.headers["x-hub-signature-256"];
-      if (!verifySignature(webhookSecret, body, Array.isArray(signature) ? signature[0] : signature)) {
-        return sendJson(res, 401, { ok: false, error: "invalid signature" });
-      }
-
-      const eventName = String(req.headers["x-github-event"] ?? "");
-      const payload = JSON.parse(body) as WebhookPayload;
-      const installationId = payload.installation?.id;
-      if (!installationId) return sendJson(res, 202, { ok: true, status: "ignored", reason: "missing installation id" });
-
-      const token = await createInstallationToken(appId, privateKey, installationId, apiUrl, fetchImpl);
-      const result = await handlePullRequestWebhook(eventName, payload, { token, apiUrl, fetchImpl });
-      return sendJson(res, 200, { ok: true, status: result ? "reviewed" : "ignored", result });
+      const result = await handleWebhookRequest(
+        req.method,
+        req.url,
+        req.headers,
+        body,
+        {
+          RUBRIC_PR_BOT_APP_ID: appId,
+          RUBRIC_PR_BOT_PRIVATE_KEY: privateKey,
+          RUBRIC_PR_BOT_WEBHOOK_SECRET: webhookSecret,
+          GITHUB_API_URL: apiUrl,
+        },
+        fetchImpl,
+      );
+      return sendJson(res, result.status, result.payload);
     } catch (error) {
       return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
     }
   });
   server.listen(port);
   return server;
+}
+
+export async function handleWebhookRequest(
+  method: string | undefined,
+  url: string | undefined,
+  headers: Record<string, string | string[] | undefined>,
+  body: string,
+  env: ServerEnv = process.env as ServerEnv,
+  fetchImpl: FetchLike = fetch,
+): Promise<{ status: number; payload: unknown }> {
+  if (method !== "POST" || !isWebhookPath(url)) return { status: 404, payload: { ok: false, error: "not found" } };
+
+  const appId = required(env.RUBRIC_PR_BOT_APP_ID, "RUBRIC_PR_BOT_APP_ID");
+  const privateKey = required(env.RUBRIC_PR_BOT_PRIVATE_KEY, "RUBRIC_PR_BOT_PRIVATE_KEY");
+  const webhookSecret = required(env.RUBRIC_PR_BOT_WEBHOOK_SECRET, "RUBRIC_PR_BOT_WEBHOOK_SECRET");
+  const apiUrl = env.GITHUB_API_URL ?? "https://api.github.com";
+  const signature = headers["x-hub-signature-256"];
+  if (!verifySignature(webhookSecret, body, Array.isArray(signature) ? signature[0] : signature)) {
+    return { status: 401, payload: { ok: false, error: "invalid signature" } };
+  }
+
+  const eventName = String(headers["x-github-event"] ?? "");
+  const payload = JSON.parse(body) as WebhookPayload;
+  const installationId = payload.installation?.id;
+  if (!installationId) return { status: 202, payload: { ok: true, status: "ignored", reason: "missing installation id" } };
+
+  const token = await createInstallationToken(appId, privateKey, installationId, apiUrl, fetchImpl);
+  const result = await handlePullRequestWebhook(eventName, payload, { token, apiUrl, fetchImpl });
+  return { status: 200, payload: { ok: true, status: result ? "reviewed" : "ignored", result } };
+}
+
+function isWebhookPath(url: string | undefined): boolean {
+  if (!url) return false;
+  const path = url.split("?")[0];
+  return path === "/webhook" || path === "/api/webhook";
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
