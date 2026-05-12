@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "test": "tsc --noEmit"
+    "test": "tsc && node dist/self_test.js"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
