@@ -9,6 +9,11 @@ No customer rubrics are included; examples are synthetic.
 ## Review Behavior
 
 - Handles pull request open and synchronize events for changed `*.rubric.json` files.
+- The GitHub webhook helper fetches changed files and base/head rubric contents from the GitHub API.
 - Summarizes added, removed, and changed criteria with links back to `rubric-spec` criteria docs.
-- Reports lint findings in the PR comment.
-- Returns a `failure` conclusion when lint findings include severity `error`, allowing teams to wire the app as a required check.
+- Posts or updates a marked PR comment with diff and lint findings.
+- Creates a `rubric-pr-bot` check run and returns a `failure` conclusion when lint findings include severity `error`, allowing teams to wire the app as a required check.
+
+## App Permissions
+
+The manifest requests `contents: read`, `pull_requests: read`, `issues: write`, and `checks: write`. `issues: write` is used for PR conversation comments, and `checks: write` is used for optional merge-blocking check runs.
