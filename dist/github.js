@@ -1,20 +1,52 @@
 import { handlePullRequest } from "./handlers/pull_request_opened.js";
+import { escapeMarkdown } from "./comment_builder.js";
 const DEFAULT_MARKER = "<!-- auraone-rubric-pr-bot -->";
+const CHECK_NAME = "AuraOne rubric review";
 export async function handlePullRequestWebhook(eventName, payload, options) {
-    if (eventName !== "pull_request" || !["opened", "synchronize"].includes(payload.action ?? ""))
+    if (eventName !== "pull_request" || !["opened", "reopened", "synchronize"].includes(payload.action ?? ""))
         return null;
     const context = parseContext(payload);
     const request = githubRequest(options);
-    const files = await request(`/repos/${context.owner}/${context.repo}/pulls/${context.number}/files`);
-    const paths = files.map((file) => file.filename);
-    const rubrics = await loadRubrics(request, context, paths.filter((path) => path.endsWith(".rubric.json")));
-    const review = handlePullRequest(paths, rubrics);
-    if (!review)
-        return null;
-    const body = `${options.commentMarker ?? DEFAULT_MARKER}\n${review.comment}`;
-    const commentUrl = await upsertComment(request, context, body, options.commentMarker ?? DEFAULT_MARKER);
-    const checkUrl = options.createCheck === false ? undefined : await createCheckRun(request, context, review.conclusion, body.slice(0, 65000));
-    return { ...review, commentUrl, checkUrl };
+    const externalId = `rubric-pr-bot:${context.number}:${context.headSha}`;
+    const check = options.createCheck === false ? undefined : await createOrReuseCheckRun(request, context, externalId);
+    if (check)
+        await updateCheckRun(request, context, check.id, { status: "in_progress", started_at: new Date().toISOString() });
+    try {
+        const files = await request(`/repos/${context.owner}/${context.repo}/pulls/${context.number}/files?per_page=100`);
+        const paths = files.map((file) => file.filename);
+        const rubricPaths = paths.filter((path) => path.endsWith(".rubric.json"));
+        if (rubricPaths.length === 0) {
+            const skipped = skippedResult();
+            if (check)
+                await completeCheckRun(request, context, check.id, skipped);
+            return { ...skipped, checkUrl: check?.htmlUrl };
+        }
+        const rubrics = await loadRubrics(request, context, rubricPaths);
+        const review = handlePullRequest(paths, rubrics);
+        if (!review)
+            throw new Error("rubric review did not produce a result");
+        const marker = options.commentMarker ?? DEFAULT_MARKER;
+        const body = `${marker}\n${review.comment}`;
+        const commentUrl = await upsertComment(request, context, body, marker);
+        const result = { ...review, commentUrl, checkUrl: check?.htmlUrl };
+        if (check)
+            await completeCheckRun(request, context, check.id, result);
+        return result;
+    }
+    catch (error) {
+        const blocked = blockedResult(error);
+        if (check)
+            await completeCheckRun(request, context, check.id, blocked);
+        const marker = options.commentMarker ?? DEFAULT_MARKER;
+        try {
+            blocked.commentUrl = await upsertComment(request, context, `${marker}\n${blocked.comment}`, marker);
+        }
+        catch {
+            // The Check Run remains the authoritative failure surface.
+        }
+        blocked.checkUrl = check?.htmlUrl;
+        return blocked;
+    }
 }
 function parseContext(payload) {
     const owner = payload.repository?.owner?.login ?? payload.repository?.owner?.name;
@@ -44,6 +76,8 @@ function githubRequest(options) {
         if (!response.ok) {
             throw new Error(`GitHub API ${init.method ?? "GET"} ${path} failed with ${response.status}: ${await response.text()}`);
         }
+        if (response.status === 204)
+            return undefined;
         return (await response.json());
     };
 }
@@ -73,8 +107,9 @@ async function readRubric(request, context, path, ref, optional) {
 }
 async function upsertComment(request, context, body, marker) {
     const comments = await request(`/repos/${context.owner}/${context.repo}/issues/${context.number}/comments?per_page=100`);
-    const existing = comments.find((comment) => comment.body?.includes(marker));
-    const payload = { body };
+    const existing = comments.find((comment) => (comment.user?.type === "Bot" || comment.user?.login?.endsWith("[bot]")) &&
+        comment.body?.includes(marker));
+    const payload = { body: limitText(body, 60_000) };
     const response = existing
         ? await request(`/repos/${context.owner}/${context.repo}/issues/comments/${existing.id}`, {
             method: "PATCH",
@@ -86,22 +121,116 @@ async function upsertComment(request, context, body, marker) {
         });
     return response.html_url;
 }
-async function createCheckRun(request, context, conclusion, summary) {
-    const response = await request(`/repos/${context.owner}/${context.repo}/check-runs`, {
+async function createOrReuseCheckRun(request, context, externalId) {
+    const existing = await request(`/repos/${context.owner}/${context.repo}/commits/${context.headSha}/check-runs?check_name=${encodeURIComponent(CHECK_NAME)}&filter=latest`);
+    const match = existing.check_runs?.find((check) => check.external_id === externalId);
+    if (match)
+        return { id: match.id, htmlUrl: match.html_url };
+    const created = await request(`/repos/${context.owner}/${context.repo}/check-runs`, {
         method: "POST",
         body: JSON.stringify({
-            name: "rubric-pr-bot",
+            name: CHECK_NAME,
             head_sha: context.headSha,
-            status: "completed",
-            conclusion,
+            external_id: externalId,
+            status: "queued",
             output: {
-                title: conclusion === "success" ? "Rubric review passed" : "Rubric review found blocking issues",
-                summary,
+                title: "Rubric review queued",
+                summary: "AuraOne is loading changed rubric files and preparing evidence.",
             },
         }),
     });
-    return response.html_url;
+    return { id: created.id, htmlUrl: created.html_url };
+}
+async function updateCheckRun(request, context, checkId, payload) {
+    await request(`/repos/${context.owner}/${context.repo}/check-runs/${checkId}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+    });
+}
+async function completeCheckRun(request, context, checkId, result) {
+    await updateCheckRun(request, context, checkId, {
+        status: "completed",
+        completed_at: new Date().toISOString(),
+        conclusion: result.conclusion,
+        output: {
+            title: checkTitle(result.state),
+            summary: limitText(result.comment, 60_000),
+            annotations: annotations(result.findings),
+        },
+    });
+}
+function annotations(findings) {
+    return findings.slice(0, 50).map((finding) => ({
+        path: finding.file ?? "rubric.rubric.json",
+        start_line: 1,
+        end_line: 1,
+        annotation_level: finding.severity === "error" ? "failure" : "warning",
+        title: limitText(`${finding.rule}: ${finding.severity === "error" ? "blocking" : "review"}`, 255),
+        message: limitText(cleanText(finding.message), 64_000),
+        raw_details: finding.path ? `Rubric source path: ${cleanText(finding.path)}` : undefined,
+    }));
+}
+function skippedResult() {
+    return {
+        state: "skipped",
+        conclusion: "neutral",
+        files: [],
+        findings: [],
+        comment: [
+            "## AuraOne Rubric Review",
+            "",
+            "**Decision:** Skipped",
+            "",
+            "No changed `*.rubric.json` files were found in this pull request.",
+            "",
+            "### Next action",
+            "",
+            "No action is required. The review will run when a rubric file changes.",
+            "",
+            "Generated by AuraOne Rubric PR Bot 0.2.0.",
+        ].join("\n"),
+    };
+}
+function blockedResult(error) {
+    const message = cleanText(error instanceof Error ? error.message : String(error));
+    return {
+        state: "blocked",
+        conclusion: "action_required",
+        files: [],
+        findings: [],
+        comment: [
+            "## AuraOne Rubric Review",
+            "",
+            "**Decision:** Blocked",
+            "",
+            "### Evidence",
+            "",
+            escapeMarkdown(message),
+            "",
+            "### Next action",
+            "",
+            "Correct the malformed rubric, repository permissions, or GitHub App configuration, then synchronize the pull request.",
+            "",
+            "Generated by AuraOne Rubric PR Bot 0.2.0.",
+        ].join("\n"),
+    };
+}
+function checkTitle(state) {
+    return {
+        pass: "Rubric review passed",
+        review: "Rubric review needs attention",
+        fail: "Rubric review found blocking issues",
+        blocked: "Rubric review could not complete",
+        skipped: "Rubric review skipped",
+    }[state];
 }
 function encodeURIComponentPath(path) {
     return path.split("/").map(encodeURIComponent).join("/");
+}
+function cleanText(value) {
+    return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+}
+function limitText(value, max) {
+    const cleaned = cleanText(value);
+    return cleaned.length > max ? `${cleaned.slice(0, max - 20)}\n\n_Output truncated._` : cleaned;
 }

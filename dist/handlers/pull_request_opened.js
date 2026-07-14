@@ -5,13 +5,15 @@ export function handlePullRequest(files, rubrics = {}) {
     if (!rubricFiles.length)
         return null;
     const diffs = rubricFiles.map((file) => ({ file, ...diffRubrics(rubrics[file]?.base, rubrics[file]?.head ?? {}) }));
-    const findings = rubricFiles.flatMap((file) => lintRubric(rubrics[file]?.head ?? {}));
+    const findings = rubricFiles.flatMap((file) => lintRubric(rubrics[file]?.head ?? {}).map((finding) => ({ ...finding, file })));
     const comment = buildComment({ files: rubricFiles, diffs }, findings);
+    const state = hasBlockingFindings(findings) ? "fail" : findings.length > 0 ? "review" : "pass";
     return {
         files: rubricFiles,
         diffs,
         findings,
         comment,
-        conclusion: hasBlockingFindings(findings) ? "failure" : "success",
+        state,
+        conclusion: state === "fail" ? "failure" : state === "review" ? "neutral" : "success",
     };
 }

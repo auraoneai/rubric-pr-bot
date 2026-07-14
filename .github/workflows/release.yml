@@ -1,0 +1,185 @@
+name: Release Rubric PR Bot
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing immutable release tag, for example v0.2.0"
+        required: true
+        type: string
+      publish_release:
+        description: "Create or update the GitHub Release with verified assets"
+        type: boolean
+        required: true
+        default: false
+      promote_major:
+        description: "Move the matching major tag after immutable-release verification"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-rubric-pr-bot-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify immutable release
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.release.outputs.artifact_name }}
+      tag: ${{ steps.release.outputs.tag }}
+      tarball: ${{ steps.pack.outputs.tarball }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+          cache: npm
+      - name: Use npm with SBOM support
+        run: npm install --global npm@11.18.0
+      - name: Resolve and validate immutable release tag
+        id: release
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$INPUT_RELEASE_TAG"
+          else
+            tag="$REF_NAME"
+          fi
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must be an exact v-prefixed semantic version: $tag" >&2
+            exit 1
+          fi
+          version="$(node -p "require('./package.json').version")"
+          test "$tag" = "v$version"
+          {
+            echo "artifact_name=rubric-pr-bot-release-$version"
+            echo "tag=$tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - name: Run release preflight
+        run: npm run release:preflight -- "${{ steps.release.outputs.tag }}"
+      - name: Build release tarball, checksum, and SBOM
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          npm pack --json --ignore-scripts --pack-destination release > release/pack.json
+          tarball="$(node -e "const fs=require('fs'); const [pack]=JSON.parse(fs.readFileSync('release/pack.json')); process.stdout.write(pack.filename)")"
+          (
+            cd release
+            sha256sum "$tarball" > "$tarball.sha256"
+          )
+          npm sbom --sbom-format cyclonedx > "release/$tarball.cdx.json"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+      - name: Verify clean tarball consumption
+        shell: bash
+        run: |
+          set -euo pipefail
+          temp_project="$(mktemp -d)"
+          npm --prefix "$temp_project" init --yes
+          npm install \
+            --prefix "$temp_project" \
+            --ignore-scripts \
+            --no-audit \
+            --no-fund \
+            "$GITHUB_WORKSPACE/release/${{ steps.pack.outputs.tarball }}"
+          node "$temp_project/node_modules/@auraone/rubric-pr-bot/dist/self_test.js"
+      - name: Upload immutable release evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.release.outputs.artifact_name }}
+          path: |
+            release/${{ steps.pack.outputs.tarball }}
+            release/${{ steps.pack.outputs.tarball }}.sha256
+            release/${{ steps.pack.outputs.tarball }}.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  github_release:
+    name: attest and publish immutable GitHub Release
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.verify.outputs.artifact_name }}
+          path: release
+      - name: Attest package tarball
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: release/${{ needs.verify.outputs.tarball }}
+      - name: Create or update immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes \
+              --title "AuraOne Rubric PR Bot ${{ needs.verify.outputs.version }}"
+          fi
+          gh release upload "$RELEASE_TAG" \
+            release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+  promote_major:
+    name: promote separately gated moving major tag
+    needs: [verify, github_release]
+    if: >-
+      ${{
+        always() &&
+        github.event_name == 'workflow_dispatch' &&
+        inputs.promote_major &&
+        needs.verify.result == 'success' &&
+        (needs.github_release.result == 'success' || needs.github_release.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.verify.outputs.tag }}
+      - name: Verify immutable release and promote major tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          published_tag="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          test "$published_tag" = "$RELEASE_TAG"
+          test "$(git rev-parse 'HEAD^{commit}')" = "$(git rev-parse "$RELEASE_TAG^{commit}")"
+          major="${RELEASE_TAG%%.*}"
+          git tag -f "$major" "$RELEASE_TAG"
+          git push origin "refs/tags/$major" --force

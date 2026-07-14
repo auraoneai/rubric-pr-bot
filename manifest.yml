@@ -1,6 +1,6 @@
 name: AuraOne Rubric PR Bot
 url: https://rubric-pr-bot.auraone.ai
-description: Checks pull requests against AuraOne rubric specifications and posts actionable review feedback.
+description: Reviews changed *.rubric.json files with idempotent Check Runs, annotations, and pull request summaries.
 hook_attributes:
   url: https://rubric-pr-bot.auraone.ai/webhook
   active: true

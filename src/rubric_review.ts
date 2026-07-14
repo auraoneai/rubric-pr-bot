@@ -16,6 +16,7 @@ export type Finding = {
   rule: string;
   message: string;
   path?: string;
+  file?: string;
 };
 
 export type RubricDiff = ReturnType<typeof diffRubrics>;
@@ -25,7 +26,8 @@ export type ReviewResult = {
   diffs: Array<{ file: string } & RubricDiff>;
   findings: Finding[];
   comment: string;
-  conclusion: "success" | "failure";
+  state: "pass" | "review" | "fail";
+  conclusion: "success" | "neutral" | "failure";
 };
 
 export function diffRubrics(base: Rubric | undefined, head: Rubric) {
