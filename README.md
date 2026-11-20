@@ -1,5 +1,20 @@
 # AuraOne Rubric PR Bot
 
+**LLM evaluation rubric review bot**: a GitHub App that diffs and lints `*.rubric.json` changes in pull requests.
+
+> Part of [Rubric Studio](https://auraone.ai/open/rubric-studio-open). Use it alongside Rubric Studio so rubric changes versioned in Git get a Check Run review on every pull request.
+
+## Quick Start
+
+```text
+https://github.com/apps/auraone-rubric-pr-bot
+```
+
+```bash
+npm ci
+npm test
+```
+
 Review changed `*.rubric.json` files through a GitHub App Check Run and pull request summary.
 
 Rubric PR Bot is for teams that version evaluation rubrics in Git. It applies deterministic, `rubric-spec`-aligned TypeScript diff and lint rules, then publishes added, removed, and changed criteria, weight deltas, missing ids/examples/anchors, vague or compound wording, annotations, and an exact next action.

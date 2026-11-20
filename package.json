@@ -2,13 +2,15 @@
   "name": "@auraone/rubric-pr-bot",
   "version": "0.2.0",
   "private": false,
-  "description": "GitHub App that reviews rubric JSON diffs and lint findings through idempotent Check Runs and pull request comments.",
+  "description": "LLM evaluation rubric review GitHub App: diffs and lints rubric JSON through idempotent Check Runs and pull request comments.",
   "repository": {
     "type": "git",
     "url": "https://github.com/auraoneai/rubric-pr-bot.git"
   },
-  "homepage": "https://rubric-pr-bot.auraone.ai",
-  "bugs": "https://github.com/auraoneai/rubric-pr-bot/issues",
+  "homepage": "https://auraone.ai/open/rubric-studio-open",
+  "bugs": {
+    "url": "https://github.com/auraoneai/rubric-pr-bot/issues"
+  },
   "keywords": ["github-app", "github-checks", "rubric", "llm-evaluation", "evals", "code-review", "quality-gate"],
   "license": "MIT",
   "type": "module",
